@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::num::NonZeroUsize;
 use std::os::unix::ffi::OsStringExt;
+use std::thread;
 use std::thread::available_parallelism;
 use std::{
     fs::File,
@@ -246,21 +247,44 @@ fn exec_one_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) 
 
 fn exec_with_buf_read<R: BufRead, W: Write>(args: &Args, mut r: R, w: W) -> Result<()> {
     let mut command = Command::new(&args.cmd_name);
-    let mut inb = Vec::<u8>::new();
-    r.read_to_end(&mut inb)?;
     let mut child = command
         .args(&args.cmd_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to execute: {}", args.cmd_name))?;
-    // Take and drop stdin to signal EOF after writing
-    child.stdin.take().unwrap().write_all(&inb)?;
-    let output = child.wait_with_output()?;
-    if output.status.success() {
-        diff(args, w, "<stdin>", &inb, "<stdout>", &output.stdout)?;
+    let mut child_stdin = child.stdin.take().unwrap();
+    let mut child_stdout = child.stdout.take().unwrap();
+    // Read child's stdout in a thread to prevent deadlock while streaming stdin
+    let stdout_handle = thread::spawn(move || -> io::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        child_stdout.read_to_end(&mut buf)?;
+        Ok(buf)
+    });
+    // Stream r to child_stdin, capturing a copy in inb for the diff
+    let mut inb = Vec::<u8>::new();
+    let stream_result = (|| -> io::Result<()> {
+        let mut chunk = [0u8; 8192];
+        loop {
+            let n = r.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            inb.extend_from_slice(&chunk[..n]);
+            child_stdin.write_all(&chunk[..n])?;
+        }
+        Ok(())
+    })();
+    drop(child_stdin); // signal EOF to child regardless of stream_result
+    let child_out = stdout_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("stdout reader thread panicked"))??;
+    let status = child.wait()?;
+    stream_result?;
+    if status.success() {
+        diff(args, w, "<stdin>", &inb, "<stdout>", &child_out)?;
     } else {
-        warn!("command exited with {}", output.status);
+        warn!("command exited with {}", status);
     }
     Ok(())
 }
