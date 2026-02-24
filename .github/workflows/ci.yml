@@ -27,8 +27,9 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo llvm-cov --all --lcov --output-path lcov.info
       - run: cargo llvm-cov --all --no-run
-      - uses: codecov/codecov-action@v3
+      - uses: codecov/codecov-action@v4
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
   lint:
     name: Lint
