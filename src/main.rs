@@ -9,7 +9,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::Parser;
 use itertools::process_results;
 use log::{trace, warn};
@@ -44,6 +44,9 @@ struct Args {
     /// Replace occurrences of REPLACE_STR in arguments with the file path
     #[clap(short = 'I', long)]
     replace_str: Option<String>,
+    /// Skip unreadable files with a warning instead of aborting
+    #[clap(short = 's', long)]
+    skip_unreadable: bool,
     /// Force parallel execution for debugging
     #[doc(hidden)]
     #[clap(long, hide = true)]
@@ -194,10 +197,28 @@ fn serial_exec_multiple_files<W: Write, I: Iterator<Item = PathBuf>>(
 
 fn exec_one_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) -> Result<()> {
     let mut command = Command::new(&args.cmd_name);
-    let inf = File::open(file)?;
+    let inf = match File::open(file) {
+        Ok(f) => f,
+        Err(e) => {
+            if args.skip_unreadable {
+                eprintln!("{}: {}", file.display(), e);
+                return Ok(());
+            }
+            return Err(e).with_context(|| format!("failed to open: {}", file.display()));
+        }
+    };
     let mut inbr = BufReader::new(inf);
     let mut inb = Vec::<u8>::new();
-    inbr.read_to_end(&mut inb)?;
+    match inbr.read_to_end(&mut inb) {
+        Ok(_) => {}
+        Err(e) => {
+            if args.skip_unreadable {
+                eprintln!("{}: {}", file.display(), e);
+                return Ok(());
+            }
+            return Err(e).with_context(|| format!("failed to read: {}", file.display()));
+        }
+    }
     let child = if let Some(ref placeholder) = args.replace_str {
         let file_str = file.to_string_lossy();
         let replaced: Vec<String> = cmd_args
