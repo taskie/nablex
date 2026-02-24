@@ -90,9 +90,10 @@ fn run_with_files_from_stdin<W: Write>(args: &Args, bufw: W) -> Result<()> {
 }
 
 fn run_with_files_from_file<W: Write>(args: &Args, bufw: W, path: &Path) -> Result<()> {
-    let file = File::open(path)?;
+    let file = File::open(path).with_context(|| format!("failed to open: {}", path.display()))?;
     let bufr = BufReader::new(file);
-    run_with_files_from_buf_reader(args, bufw, bufr)?;
+    run_with_files_from_buf_reader(args, bufw, bufr)
+        .with_context(|| format!("failed to read: {}", path.display()))?;
     Ok(())
 }
 
@@ -231,7 +232,8 @@ fn exec_one_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) 
     }
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
-    .spawn()?;
+    .spawn()
+    .with_context(|| format!("{}: failed to execute: {}", file.display(), args.cmd_name))?;
     let output = child.wait_with_output()?;
     if output.status.success() {
         let name = file.to_string_lossy();
@@ -250,7 +252,8 @@ fn exec_with_buf_read<R: BufRead, W: Write>(args: &Args, mut r: R, w: W) -> Resu
         .args(&args.cmd_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()?;
+        .spawn()
+        .with_context(|| format!("failed to execute: {}", args.cmd_name))?;
     // Take and drop stdin to signal EOF after writing
     child.stdin.take().unwrap().write_all(&inb)?;
     let output = child.wait_with_output()?;
