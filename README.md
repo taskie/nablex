@@ -98,7 +98,7 @@ With `find`:
 
 ```sh
 find . -name '*.txt' | nabla -f - sed 's/foo/bar/g'
-find . -name '*.txt' -print0 | nabla -0 -f - sed 's/foo/bar/g'
+find . -name '*.txt' -print0 | nabla -f - -0 sed 's/foo/bar/g'
 find . -name '*.txt' -exec nabla sed 's/foo/bar/g' ::: '{}' +
 ```
 
@@ -106,7 +106,7 @@ With `fd`:
 
 ```sh
 fd '\.txt$' | nabla -f - sed 's/foo/bar/g'
-fd -0 '\.txt$' | nabla -0 -f - sed 's/foo/bar/g'
+fd -0 '\.txt$' | nabla -f - -0 sed 's/foo/bar/g'
 fd '\.txt$' -X nabla sed 's/foo/bar/g' :::
 ```
 
@@ -119,24 +119,27 @@ rg -0l 'foo' -g '*.txt' | nabla -f - -0u rg 'foo' -r 'bar' -IN --passthru
 ## Usage
 
 ```console
-$ nabla --help
+$ nabla -h
 nabla creates patch files by comparing command output with original files
 
 Usage: nabla [OPTIONS] <CMD> [ARG]...
 
 Arguments:
   <CMD>     Command to execute
-  [ARG]...  Command arguments
+  [ARG]...  Arguments for CMD; use ':::' to separate CMD args from file paths
 
 Options:
-  -0, --null                             Read NUL-delimited input
-  -j, --jobs <JOBS>                      Approximate number of parallel jobs [default: 0]
-  -u, --unordered                        Allow unordered output for faster parallel execution
-  -f, --files-from <FILES_FROM>          Read file paths from a file
-  -I, --replace-str <REPLACE_STR>        Replace occurrences of REPLACE_STR in arguments with the file path
-  -h, --help                             Print help
-  -V, --version                          Print version
+  -0, --null                       Use NUL as the path delimiter instead of newline (for use with -f or find -print0)
+  -j, --jobs <JOBS>                Number of parallel jobs (0 = auto-detect) [default: 0]
+  -u, --unordered                  Allow unordered output for faster parallel execution
+  -f, --files-from <FILE>          Read file paths from FILE ('-' for stdin)
+  -I, --replace-str <REPLACE_STR>  Replace occurrences of REPLACE_STR in arguments with the file path
+  -s, --skip-unreadable            Skip unreadable files with a warning instead of aborting
+  -h, --help                       Print help (see more with '--help')
+  -V, --version                    Print version
 ```
+
+Run `nabla --help` for a full description of operating modes.
 
 ## License
 

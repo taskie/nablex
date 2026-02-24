@@ -22,24 +22,40 @@ use similar::TextDiff;
 mod parallel;
 
 #[derive(Clone, Debug, Parser)]
-#[clap(author, version, about, long_about = None)]
+#[clap(
+    author,
+    version,
+    about,
+    long_about = None,
+    after_long_help = "\
+Modes:
+  Filter (default)  Pipe stdin through CMD, diff stdin vs stdout
+  File              Open each file, run CMD with file path appended, diff result
+  File list (-f)    Like File mode, read file paths from FILE
+
+File mode example:
+  nabla sed 's/foo/bar/g' ::: file.txt *.md
+
+File list mode example:
+  find . -name '*.txt' | nabla -f - sed 's/foo/bar/g'"
+)]
 struct Args {
-    /// Read NUL-delimited input
+    /// Use NUL as the path delimiter instead of newline (for use with -f or find -print0)
     #[clap(short = '0', long)]
     null: bool,
-    /// Approximate number of parallel jobs
+    /// Number of parallel jobs (0 = auto-detect)
     #[clap(short = 'j', long, default_value_t = 0)]
     jobs: u32,
     /// Allow unordered output for faster parallel execution
     #[clap(short = 'u', long)]
     unordered: bool,
-    /// Read file paths from a file
-    #[clap(short, long)]
+    /// Read file paths from FILE ('-' for stdin)
+    #[clap(short, long, value_name = "FILE")]
     files_from: Option<PathBuf>,
     /// Command to execute
     #[clap(name = "CMD")]
     cmd_name: String,
-    /// Command arguments
+    /// Arguments for CMD; use ':::' to separate CMD args from file paths
     #[clap(name = "ARG", trailing_var_arg = true, allow_hyphen_values = true)]
     cmd_args: Vec<String>,
     /// Replace occurrences of REPLACE_STR in arguments with the file path
