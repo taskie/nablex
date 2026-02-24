@@ -39,7 +39,7 @@ struct Args {
     #[clap(name = "CMD")]
     cmd_name: String,
     /// Command arguments
-    #[clap(name = "ARG", trailing_var_arg = true)]
+    #[clap(name = "ARG", trailing_var_arg = true, allow_hyphen_values = true)]
     cmd_args: Vec<String>,
     /// Replace occurrences of REPLACE_STR in arguments with the file path
     #[clap(short = 'I', long)]
