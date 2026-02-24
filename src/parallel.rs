@@ -1,10 +1,30 @@
-use std::{collections::VecDeque, io::Write, num::NonZeroUsize, path::PathBuf, sync::Arc, thread};
+use std::{
+    collections::VecDeque,
+    io::Write,
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+    thread,
+};
 
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{Sender, bounded, select};
 use log::trace;
 
-use crate::{Args, exec_one_file};
+#[derive(Debug, Clone)]
+pub(crate) struct ParallelOptions {
+    pub p2c_capacity_factor: usize,
+    pub c2p_rxs_capacity_factor: usize,
+}
+
+impl Default for ParallelOptions {
+    fn default() -> Self {
+        Self {
+            p2c_capacity_factor: 2,
+            c2p_rxs_capacity_factor: 8,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum Request {
     Input(usize, PathBuf),
@@ -33,29 +53,31 @@ impl Response {
     }
 }
 
-pub(crate) fn parallel_exec_multiple_files_unordered<W: Write, I: Iterator<Item = PathBuf>>(
-    args: &Args,
+pub(crate) fn parallel_exec_multiple_files_unordered<W, I, F>(
     mut w: W,
-    cmd_args: &[String],
     files: I,
     threads: NonZeroUsize,
-) -> Result<()> {
+    exec_fn: F,
+    opts: ParallelOptions,
+) -> Result<()>
+where
+    W: Write,
+    I: Iterator<Item = PathBuf>,
+    F: Fn(&Path) -> Result<Vec<u8>> + Send + Sync,
+{
     trace!("the number of threads: {}", threads.get());
     thread::scope(|s| {
-        let args = Arc::new(args.clone());
-        let cmd_args = Arc::new(cmd_args.to_owned());
         // parent to children
-        let p2c_capacity = threads.get() * 2;
+        let p2c_capacity = threads.get() * opts.p2c_capacity_factor;
         let (p2c_tx, p2c_rx) = bounded::<Request>(p2c_capacity);
         // children to parent
-        let c2p_capacity = threads.get() * 2;
+        let c2p_capacity = threads.get() * opts.p2c_capacity_factor;
         let (c2p_tx, c2p_rx) = bounded::<Response>(c2p_capacity);
         // generate workers
         for tid in 0..threads.get() {
-            let args = args.clone();
-            let cmd_args = cmd_args.clone();
             let p2c_rx = p2c_rx.clone();
             let c2p_tx = c2p_tx.clone();
+            let exec_fn = &exec_fn;
             s.spawn(move || -> Result<()> {
                 loop {
                     let Ok(req) = p2c_rx.recv() else {
@@ -64,12 +86,10 @@ pub(crate) fn parallel_exec_multiple_files_unordered<W: Write, I: Iterator<Item 
                     };
                     match req {
                         Request::Input(i, file) => {
-                            let mut buf = Vec::new();
-                            let resp =
-                                match exec_one_file(args.as_ref(), &mut buf, &cmd_args, &file) {
-                                    Ok(_) => Response::Diff(i, file, tid, buf),
-                                    Err(e) => Response::Error(i, file, tid, e),
-                                };
+                            let resp = match exec_fn(&file) {
+                                Ok(buf) => Response::Diff(i, file, tid, buf),
+                                Err(e) => Response::Error(i, file, tid, e),
+                            };
                             c2p_tx.send(resp)?;
                         }
                     }
@@ -109,24 +129,26 @@ pub(crate) fn parallel_exec_multiple_files_unordered<W: Write, I: Iterator<Item 
     })
 }
 
-pub(crate) fn parallel_exec_multiple_files_ordered<W: Write, I: Iterator<Item = PathBuf>>(
-    args: &Args,
+pub(crate) fn parallel_exec_multiple_files_ordered<W, I, F>(
     mut w: W,
-    cmd_args: &[String],
     files: I,
     threads: NonZeroUsize,
-) -> Result<()> {
+    exec_fn: F,
+    opts: ParallelOptions,
+) -> Result<()>
+where
+    W: Write,
+    I: Iterator<Item = PathBuf>,
+    F: Fn(&Path) -> Result<Vec<u8>> + Send + Sync,
+{
     trace!("the number of threads: {}", threads.get());
     thread::scope(|s| {
-        let args = Arc::new(args.clone());
-        let cmd_args = Arc::new(cmd_args.to_owned());
+        let exec_fn = &exec_fn;
         // parent to children
-        let p2c_capacity = threads.get() * 2;
+        let p2c_capacity = threads.get() * opts.p2c_capacity_factor;
         let (p2c_tx, p2c_rx) = bounded::<(Request, Sender<Response>)>(p2c_capacity);
         // generate workers
         for tid in 0..threads.get() {
-            let args = args.clone();
-            let cmd_args = cmd_args.clone();
             let p2c_rx = p2c_rx.clone();
             s.spawn(move || -> Result<()> {
                 loop {
@@ -136,12 +158,10 @@ pub(crate) fn parallel_exec_multiple_files_ordered<W: Write, I: Iterator<Item = 
                     };
                     match req {
                         Request::Input(i, file) => {
-                            let mut buf = Vec::new();
-                            let resp =
-                                match exec_one_file(args.as_ref(), &mut buf, &cmd_args, &file) {
-                                    Ok(_) => Response::Diff(i, file, tid, buf),
-                                    Err(e) => Response::Error(i, file, tid, e),
-                                };
+                            let resp = match exec_fn(&file) {
+                                Ok(buf) => Response::Diff(i, file, tid, buf),
+                                Err(e) => Response::Error(i, file, tid, e),
+                            };
                             c2p_tx.send(resp)?;
                         }
                     }
@@ -152,7 +172,7 @@ pub(crate) fn parallel_exec_multiple_files_ordered<W: Write, I: Iterator<Item = 
         // processing files
         trace!("processing...");
         let mut c2p_rxs = VecDeque::new();
-        let c2p_rxs_capacity = threads.get() * 8;
+        let c2p_rxs_capacity = threads.get() * opts.c2p_rxs_capacity_factor;
         for (i, file) in files.enumerate() {
             let req = Request::Input(i, file.to_owned());
             // child to parent
@@ -165,7 +185,8 @@ pub(crate) fn parallel_exec_multiple_files_ordered<W: Write, I: Iterator<Item = 
                     let resp = c2p_rxs[0].recv()?;
                     resp.write_to(&mut w)?;
                     c2p_rxs.pop_front();
-                } else if !c2p_rxs.is_empty() {
+                } else {
+                    // c2p_rxs is always non-empty here: push_back runs before this loop
                     select! {
                         send(p2c_tx, (req, c2p_tx)) -> unit => {
                             unit?;
@@ -177,10 +198,6 @@ pub(crate) fn parallel_exec_multiple_files_ordered<W: Write, I: Iterator<Item = 
                             c2p_rxs.pop_front();
                         }
                     }
-                } else {
-                    p2c_tx.send((req, c2p_tx))?;
-                    trace!("sent: {}", i);
-                    break;
                 }
             }
         }
@@ -194,4 +211,182 @@ pub(crate) fn parallel_exec_multiple_files_ordered<W: Write, I: Iterator<Item = 
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroUsize;
+    use std::time::Duration;
+
+    fn threads(n: usize) -> NonZeroUsize {
+        NonZeroUsize::new(n).unwrap()
+    }
+
+    fn mock_exec(file: &Path) -> Result<Vec<u8>> {
+        Ok(format!("output:{}\n", file.display()).into_bytes())
+    }
+
+    fn failing_exec(file: &Path) -> Result<Vec<u8>> {
+        Err(anyhow::anyhow!("exec failed for {}", file.display()))
+    }
+
+    #[test]
+    fn test_unordered_basic() {
+        let files = vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")];
+        let mut out = Vec::new();
+        parallel_exec_multiple_files_unordered(
+            &mut out,
+            files.into_iter(),
+            threads(2),
+            mock_exec,
+            ParallelOptions::default(),
+        )
+        .unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("output:a.txt"));
+        assert!(output.contains("output:b.txt"));
+    }
+
+    #[test]
+    fn test_ordered_preserves_order() {
+        let files: Vec<PathBuf> = (0..20)
+            .map(|i| PathBuf::from(format!("{:03}.txt", i)))
+            .collect();
+        let mut out = Vec::new();
+        parallel_exec_multiple_files_ordered(
+            &mut out,
+            files.into_iter(),
+            threads(4),
+            mock_exec,
+            ParallelOptions::default(),
+        )
+        .unwrap();
+        let output = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        // verify ordering: each "output:NNN.txt" should appear in sequence
+        let output_lines: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|l| l.starts_with("output:"))
+            .collect();
+        for (idx, line) in output_lines.iter().enumerate() {
+            assert_eq!(*line, format!("output:{:03}.txt", idx));
+        }
+    }
+
+    #[test]
+    fn test_unordered_error() {
+        let files = vec![PathBuf::from("fail.txt")];
+        let mut out = Vec::new();
+        let result = parallel_exec_multiple_files_unordered(
+            &mut out,
+            files.into_iter(),
+            threads(1),
+            failing_exec,
+            ParallelOptions::default(),
+        );
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("fail.txt"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_ordered_error() {
+        let files = vec![PathBuf::from("fail.txt")];
+        let mut out = Vec::new();
+        let result = parallel_exec_multiple_files_ordered(
+            &mut out,
+            files.into_iter(),
+            threads(1),
+            failing_exec,
+            ParallelOptions::default(),
+        );
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("fail.txt"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_response_write_to_diff() {
+        let resp = Response::Diff(0, PathBuf::from("x.txt"), 0, b"hello\n".to_vec());
+        let mut out = Vec::new();
+        resp.write_to(&mut out).unwrap();
+        assert_eq!(out, b"hello\n");
+    }
+
+    #[test]
+    fn test_response_write_to_error() {
+        let resp = Response::Error(0, PathBuf::from("x.txt"), 0, anyhow::anyhow!("boom"));
+        let mut out = Vec::new();
+        let err = resp.write_to(&mut out).unwrap_err();
+        assert!(err.to_string().contains("x.txt"));
+        // root cause
+        assert!(err.root_cause().to_string().contains("boom"));
+    }
+
+    #[test]
+    fn test_unordered_backpressure() {
+        // Tiny capacities force the recv arm in select! to be exercised
+        let opts = ParallelOptions {
+            p2c_capacity_factor: 1,
+            c2p_rxs_capacity_factor: 1,
+        };
+        let files: Vec<PathBuf> = (0..50)
+            .map(|i| PathBuf::from(format!("{}.txt", i)))
+            .collect();
+        let mut out = Vec::new();
+        parallel_exec_multiple_files_unordered(
+            &mut out,
+            files.into_iter(),
+            threads(2),
+            |file: &Path| {
+                thread::sleep(Duration::from_millis(1));
+                mock_exec(file)
+            },
+            opts,
+        )
+        .unwrap();
+        let output = String::from_utf8(out).unwrap();
+        // all 50 files should be processed
+        for i in 0..50 {
+            assert!(
+                output.contains(&format!("output:{}.txt", i)),
+                "missing {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_ordered_overflow_drain() {
+        // c2p_rxs_capacity_factor=1 with many files forces the overflow drain path
+        let opts = ParallelOptions {
+            p2c_capacity_factor: 1,
+            c2p_rxs_capacity_factor: 1,
+        };
+        let files: Vec<PathBuf> = (0..30)
+            .map(|i| PathBuf::from(format!("{:03}.txt", i)))
+            .collect();
+        let mut out = Vec::new();
+        parallel_exec_multiple_files_ordered(
+            &mut out,
+            files.into_iter(),
+            threads(2),
+            |file: &Path| {
+                thread::sleep(Duration::from_millis(1));
+                mock_exec(file)
+            },
+            opts,
+        )
+        .unwrap();
+        let output = String::from_utf8(out).unwrap();
+        let output_lines: Vec<&str> = output
+            .lines()
+            .filter(|l| l.starts_with("output:"))
+            .collect();
+        // verify all 30 files in order
+        assert_eq!(output_lines.len(), 30);
+        for (idx, line) in output_lines.iter().enumerate() {
+            assert_eq!(*line, format!("output:{:03}.txt", idx));
+        }
+    }
 }

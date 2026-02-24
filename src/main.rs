@@ -13,7 +13,9 @@ use anyhow::Result;
 use clap::Parser;
 use itertools::process_results;
 use log::{trace, warn};
-use parallel::{parallel_exec_multiple_files_ordered, parallel_exec_multiple_files_unordered};
+use parallel::{
+    ParallelOptions, parallel_exec_multiple_files_ordered, parallel_exec_multiple_files_unordered,
+};
 use similar::TextDiff;
 
 mod parallel;
@@ -149,10 +151,29 @@ fn exec_multiple_files<W: Write, I: Iterator<Item = PathBuf>>(
     };
     if threads <= NonZeroUsize::new(1).unwrap() && !args.force_parallel {
         serial_exec_multiple_files(args, w, cmd_args, files)
-    } else if args.unordered {
-        parallel_exec_multiple_files_unordered(args, w, cmd_args, files, threads)
     } else {
-        parallel_exec_multiple_files_ordered(args, w, cmd_args, files, threads)
+        let exec_fn = |file: &Path| -> Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            exec_one_file(args, &mut buf, cmd_args, file)?;
+            Ok(buf)
+        };
+        if args.unordered {
+            parallel_exec_multiple_files_unordered(
+                w,
+                files,
+                threads,
+                exec_fn,
+                ParallelOptions::default(),
+            )
+        } else {
+            parallel_exec_multiple_files_ordered(
+                w,
+                files,
+                threads,
+                exec_fn,
+                ParallelOptions::default(),
+            )
+        }
     }
 }
 
