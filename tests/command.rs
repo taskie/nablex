@@ -341,3 +341,56 @@ fn test_exit_1_check_skip_unreadable_with_diff() {
         .code(1)
         .stdout(include_str!("fixtures/example.txt.patch"));
 }
+
+// Label tests
+
+#[test]
+fn test_label_both() -> Result<(), Box<dyn std::error::Error>> {
+    // -L given twice: override both old and new labels
+    test_filter!(
+        ["-L", "original", "-L", "modified", "sed", "s/e/E/g"],
+        include_str!("fixtures/example.txt"),
+        include_str!("fixtures/example.label.patch")
+    );
+    Ok(())
+}
+
+#[test]
+fn test_label_old_only() -> Result<(), Box<dyn std::error::Error>> {
+    // -L given once: override old label, new defaults to <stdout>
+    test_filter!(
+        ["-L", "original", "sed", "s/e/E/g"],
+        include_str!("fixtures/example.txt"),
+        include_str!("fixtures/example.label_old_only.patch")
+    );
+    Ok(())
+}
+
+#[test]
+fn test_label_file_mode() -> Result<(), Box<dyn std::error::Error>> {
+    test_filter!(
+        [
+            "-L",
+            "original",
+            "-L",
+            "modified",
+            "sed",
+            "s/e/E/g",
+            ":::",
+            "tests/fixtures/example.txt"
+        ],
+        "",
+        include_str!("fixtures/example.label.patch")
+    );
+    Ok(())
+}
+
+#[test]
+fn test_label_too_many() {
+    // -L given 3 times → exit 2 (error)
+    nablex()
+        .args(["-L", "a", "-L", "b", "-L", "c", "cat"])
+        .write_stdin("hello\n")
+        .assert()
+        .code(2);
+}

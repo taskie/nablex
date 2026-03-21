@@ -84,6 +84,9 @@ struct Args {
     /// Exit with status 1 if any differences are found
     #[clap(short = 'c', long)]
     check: bool,
+    /// Override diff header labels (can be given up to 2 times: old and new)
+    #[clap(short = 'L', long = "label", num_args = 1)]
+    labels: Vec<String>,
     /// Force parallel execution for debugging
     #[doc(hidden)]
     #[clap(long, hide = true)]
@@ -107,6 +110,9 @@ fn main() {
 
 fn run() -> Result<bool> {
     let mut args = Args::parse();
+    if args.labels.len() > 2 {
+        anyhow::bail!("--label can be specified at most 2 times");
+    }
     let color_choice = match args.color {
         ColorWhen::Always => ColorChoice::Always,
         ColorWhen::Never => ColorChoice::Never,
@@ -295,7 +301,9 @@ fn exec_one_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) 
     let output = child.wait_with_output()?;
     if output.status.success() {
         let name = file.to_string_lossy();
-        return diff(args, w, &name, &inb, &name, &output.stdout);
+        let aname = args.labels.first().map(|s| s.as_str()).unwrap_or(&name);
+        let bname = args.labels.get(1).map(|s| s.as_str()).unwrap_or(&name);
+        return diff(args, w, aname, &inb, bname, &output.stdout);
     } else {
         warn!("{}: command exited with {}", file.display(), output.status);
     }
@@ -339,7 +347,9 @@ fn exec_with_buf_read<R: BufRead, W: Write>(args: &Args, mut r: R, w: W) -> Resu
     let status = child.wait()?;
     stream_result?;
     if status.success() {
-        return diff(args, w, "<stdin>", &inb, "<stdout>", &child_out);
+        let aname = args.labels.first().map(|s| s.as_str()).unwrap_or("<stdin>");
+        let bname = args.labels.get(1).map(|s| s.as_str()).unwrap_or("<stdout>");
+        return diff(args, w, aname, &inb, bname, &child_out);
     } else {
         warn!("command exited with {}", status);
     }
