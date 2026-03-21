@@ -358,51 +358,41 @@ fn diff<W: Write>(
     if !args.use_color {
         let mut udiff = diff.unified_diff();
         let udiff = udiff.header(aname, bname);
+        let has_diff = udiff.iter_hunks().next().is_some();
         udiff.to_writer(w)?;
-        return Ok(diff.ratio() < 1.0);
+        return Ok(has_diff);
     }
-    let ops = diff.grouped_ops(3);
-    if ops.is_empty() {
-        return Ok(false);
-    }
+    let mut udiff = diff.unified_diff();
+    let udiff = udiff.header(aname, bname);
+    let mut has_diff = false;
     let bold = Style::new().bold();
-    let hunk = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan)));
+    let hunk_style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan)));
     let del = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red)));
     let ins = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green)));
     let reset = anstyle::Reset;
-    writeln!(w, "{bold}--- {aname}{reset}")?;
-    writeln!(w, "{bold}+++ {bname}{reset}")?;
-    for group in &ops {
-        let old_range =
-            group.first().unwrap().old_range().start..group.last().unwrap().old_range().end;
-        let new_range =
-            group.first().unwrap().new_range().start..group.last().unwrap().new_range().end;
-        writeln!(
-            w,
-            "{hunk}@@ -{},{} +{},{} @@{reset}",
-            old_range.start + 1,
-            old_range.len(),
-            new_range.start + 1,
-            new_range.len(),
-        )?;
-        for op in group {
-            for change in diff.iter_changes(op) {
-                match change.tag() {
-                    ChangeTag::Delete => {
-                        write!(w, "{del}-{change}{reset}")?;
-                    }
-                    ChangeTag::Insert => {
-                        write!(w, "{ins}+{change}{reset}")?;
-                    }
-                    ChangeTag::Equal => {
-                        write!(w, " {change}")?;
-                    }
+    for hunk in udiff.iter_hunks() {
+        if !has_diff {
+            writeln!(w, "{bold}--- {aname}{reset}")?;
+            writeln!(w, "{bold}+++ {bname}{reset}")?;
+            has_diff = true;
+        }
+        writeln!(w, "{hunk_style}{}{reset}", hunk.header())?;
+        for change in hunk.iter_changes() {
+            match change.tag() {
+                ChangeTag::Delete => {
+                    write!(w, "{del}-{change}{reset}")?;
                 }
-                if change.missing_newline() {
-                    writeln!(w, "\\ No newline at end of file")?;
+                ChangeTag::Insert => {
+                    write!(w, "{ins}+{change}{reset}")?;
                 }
+                ChangeTag::Equal => {
+                    write!(w, " {change}")?;
+                }
+            }
+            if change.missing_newline() {
+                writeln!(w, "\\ No newline at end of file")?;
             }
         }
     }
-    Ok(true)
+    Ok(has_diff)
 }
