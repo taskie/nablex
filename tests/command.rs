@@ -72,6 +72,17 @@ fn test_filter() {
     );
 }
 
+// Context (-U)
+
+#[test]
+fn test_context_0() {
+    assert_nablex!(
+        ["-U", "0", "sed", "s/e/E/g"],
+        include_str!("fixtures/example.txt"),
+        include_str!("fixtures/example.context0.patch")
+    );
+}
+
 // File args mode (:::)
 
 #[test]

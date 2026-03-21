@@ -20,7 +20,7 @@ use clap::{Parser, ValueEnum};
 use itertools::process_results;
 use log::trace;
 use parallel::{ParallelOptions, parallel_diff_files_ordered, parallel_diff_files_unordered};
-use similar::{ChangeTag, TextDiff};
+use similar::{Algorithm, ChangeTag, TextDiff};
 
 mod parallel;
 
@@ -31,6 +31,25 @@ enum ColorWhen {
     Auto,
     Always,
     Never,
+}
+
+/// Diff algorithm selection.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum AlgorithmChoice {
+    #[default]
+    Myers,
+    Patience,
+    Lcs,
+}
+
+impl From<AlgorithmChoice> for Algorithm {
+    fn from(choice: AlgorithmChoice) -> Self {
+        match choice {
+            AlgorithmChoice::Myers => Algorithm::Myers,
+            AlgorithmChoice::Patience => Algorithm::Patience,
+            AlgorithmChoice::Lcs => Algorithm::Lcs,
+        }
+    }
 }
 
 /// Command-line arguments.
@@ -86,6 +105,12 @@ struct Args {
     /// Exit with status 1 if any differences are found
     #[clap(short = 'c', long)]
     check: bool,
+    /// Number of lines of context in unified diff output
+    #[clap(short = 'U', long, default_value_t = 3, value_name = "NUM")]
+    context: usize,
+    /// Diff algorithm
+    #[clap(long, default_value = "myers", value_name = "ALGO")]
+    algorithm: AlgorithmChoice,
     /// Override diff header labels (can be given up to 2 times: old and new)
     #[clap(short = 'L', long = "label", num_args = 1)]
     labels: Vec<String>,
@@ -361,16 +386,18 @@ fn diff<W: Write>(
     bname: &str,
     b: &[u8],
 ) -> Result<bool> {
-    let diff = TextDiff::from_lines(a, b);
+    let diff = TextDiff::configure()
+        .algorithm(args.algorithm.into())
+        .diff_lines(a, b);
     if !args.use_color {
         let mut udiff = diff.unified_diff();
-        let udiff = udiff.header(aname, bname);
+        let udiff = udiff.context_radius(args.context).header(aname, bname);
         let has_diff = udiff.iter_hunks().next().is_some();
         udiff.to_writer(w)?;
         return Ok(has_diff);
     }
     let mut udiff = diff.unified_diff();
-    let udiff = udiff.header(aname, bname);
+    let udiff = udiff.context_radius(args.context).header(aname, bname);
     let mut has_diff = false;
     let bold = Style::new().bold();
     let hunk_style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan)));
