@@ -18,7 +18,7 @@ use anstyle::{AnsiColor, Color, Style};
 use anyhow::{Context as _, Result};
 use clap::{Parser, ValueEnum};
 use itertools::process_results;
-use log::{trace, warn};
+use log::trace;
 use parallel::{ParallelOptions, parallel_diff_files_ordered, parallel_diff_files_unordered};
 use similar::{ChangeTag, TextDiff};
 
@@ -299,7 +299,7 @@ fn diff_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) -> R
         let bname = args.labels.get(1).map(|s| s.as_str()).unwrap_or(&name);
         return diff(args, w, aname, &inb, bname, &output.stdout);
     } else {
-        warn!("{}: command exited with {}", file.display(), output.status);
+        eprintln!("{}: command exited with {}", file.display(), output.status);
     }
     Ok(false)
 }
@@ -346,7 +346,7 @@ fn diff_filter<R: BufRead, W: Write>(args: &Args, mut r: R, w: W) -> Result<bool
         let bname = args.labels.get(1).map(|s| s.as_str()).unwrap_or("<stdout>");
         return diff(args, w, aname, &inb, bname, &child_out);
     } else {
-        warn!("command exited with {}", status);
+        eprintln!("command exited with {}", status);
     }
     Ok(false)
 }
