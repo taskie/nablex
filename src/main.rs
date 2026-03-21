@@ -81,14 +81,31 @@ struct Args {
     /// Skip unreadable files with a warning instead of aborting
     #[clap(short = 's', long)]
     skip_unreadable: bool,
+    /// Exit with status 1 if any differences are found
+    #[clap(short = 'c', long)]
+    check: bool,
     /// Force parallel execution for debugging
     #[doc(hidden)]
     #[clap(long, hide = true)]
     force_parallel: bool,
 }
 
-fn main() -> Result<()> {
+fn main() {
     env_logger::init();
+    match run() {
+        Ok(diff_checked) => {
+            if diff_checked {
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("nablex: {e:#}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn run() -> Result<bool> {
     let mut args = Args::parse();
     let color_choice = match args.color {
         ColorWhen::Always => ColorChoice::Always,
@@ -104,72 +121,68 @@ fn main() -> Result<()> {
     let stdout = anstream::stdout();
     let stdout_lock = stdout.lock();
     let bufw = BufWriter::new(stdout_lock);
-    if let Some(files_from) = args.files_from.as_ref() {
+    let has_diff = if let Some(files_from) = args.files_from.as_ref() {
         if Path::new("-") == files_from {
-            run_with_files_from_stdin(&args, bufw)?;
+            run_with_files_from_stdin(&args, bufw)?
         } else {
-            run_with_files_from_file(&args, bufw, files_from)?;
+            run_with_files_from_file(&args, bufw, files_from)?
         }
     } else if args.cmd_args.iter().any(|s| s == ":::") {
-        run_with_files_from_multi_args(&args, bufw)?;
+        run_with_files_from_multi_args(&args, bufw)?
     } else {
-        run_with_stdin(&args, bufw)?;
-    }
-    Ok(())
+        run_with_stdin(&args, bufw)?
+    };
+    Ok(args.check && has_diff)
 }
 
-fn run_with_stdin<W: Write>(args: &Args, bufw: W) -> Result<()> {
+fn run_with_stdin<W: Write>(args: &Args, bufw: W) -> Result<bool> {
     let stdin = io::stdin();
     let stdin_lock = stdin.lock();
     let bufr = BufReader::new(stdin_lock);
-    exec_with_buf_read(args, bufr, bufw)?;
-    Ok(())
+    exec_with_buf_read(args, bufr, bufw)
 }
 
-fn run_with_files_from_stdin<W: Write>(args: &Args, bufw: W) -> Result<()> {
+fn run_with_files_from_stdin<W: Write>(args: &Args, bufw: W) -> Result<bool> {
     let stdin = io::stdin();
     let stdin_lock = stdin.lock();
     let bufr = BufReader::new(stdin_lock);
-    run_with_files_from_buf_reader(args, bufw, bufr)?;
-    Ok(())
+    run_with_files_from_buf_reader(args, bufw, bufr)
 }
 
-fn run_with_files_from_file<W: Write>(args: &Args, bufw: W, path: &Path) -> Result<()> {
+fn run_with_files_from_file<W: Write>(args: &Args, bufw: W, path: &Path) -> Result<bool> {
     let file = File::open(path).with_context(|| format!("failed to open: {}", path.display()))?;
     let bufr = BufReader::new(file);
     run_with_files_from_buf_reader(args, bufw, bufr)
-        .with_context(|| format!("failed to read: {}", path.display()))?;
-    Ok(())
+        .with_context(|| format!("failed to read: {}", path.display()))
 }
 
 fn run_with_files_from_buf_reader<W: Write, R: BufRead>(
     args: &Args,
     mut bufw: W,
     bufr: R,
-) -> Result<()> {
+) -> Result<bool> {
     if args.null {
-        process_results(bufr.split(0), |lines| {
+        Ok(process_results(bufr.split(0), |lines| {
             exec_multiple_files(
                 args,
                 &mut bufw,
                 &args.cmd_args,
                 lines.map(|line| OsString::from_vec(line).into()),
             )
-        })??;
+        })??)
     } else {
-        process_results(bufr.lines(), |lines| {
+        Ok(process_results(bufr.lines(), |lines| {
             exec_multiple_files(
                 args,
                 &mut bufw,
                 &args.cmd_args,
                 lines.map(|line| line.into()),
             )
-        })??;
+        })??)
     }
-    Ok(())
 }
 
-fn run_with_files_from_multi_args<W: Write>(args: &Args, mut bufw: W) -> Result<()> {
+fn run_with_files_from_multi_args<W: Write>(args: &Args, mut bufw: W) -> Result<bool> {
     let cmd_args = args.cmd_args.as_slice();
     let last_components = cmd_args.split(|s| s == ":::").next_back();
     if let Some(filestrs) = last_components {
@@ -180,11 +193,10 @@ fn run_with_files_from_multi_args<W: Write>(args: &Args, mut bufw: W) -> Result<
             &mut bufw,
             cmd_opts,
             filestrs.iter().map(|line| line.into()),
-        )?;
+        )
     } else {
         unreachable!("split().next_back() always returns Some");
     }
-    Ok(())
 }
 
 fn exec_multiple_files<W: Write, I: Iterator<Item = PathBuf>>(
@@ -192,7 +204,7 @@ fn exec_multiple_files<W: Write, I: Iterator<Item = PathBuf>>(
     w: W,
     cmd_args: &[String],
     files: I,
-) -> Result<()> {
+) -> Result<bool> {
     let threads = if args.jobs > 0 {
         NonZeroUsize::new(args.jobs as usize).unwrap()
     } else {
@@ -231,24 +243,25 @@ fn serial_exec_multiple_files<W: Write, I: Iterator<Item = PathBuf>>(
     mut w: W,
     cmd_args: &[String],
     files: I,
-) -> Result<()> {
+) -> Result<bool> {
     let mut count = 0usize;
+    let mut has_diff = false;
     for file in files {
-        exec_one_file(args, &mut w, cmd_args, &file)?;
+        has_diff |= exec_one_file(args, &mut w, cmd_args, &file)?;
         count += 1;
     }
     trace!("processed: {}", count);
-    Ok(())
+    Ok(has_diff)
 }
 
-fn exec_one_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) -> Result<()> {
+fn exec_one_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) -> Result<bool> {
     let mut command = Command::new(&args.cmd_name);
     let inf = match File::open(file) {
         Ok(f) => f,
         Err(e) => {
             if args.skip_unreadable {
                 eprintln!("{}: {}", file.display(), e);
-                return Ok(());
+                return Ok(false);
             }
             return Err(e).with_context(|| format!("failed to open: {}", file.display()));
         }
@@ -260,7 +273,7 @@ fn exec_one_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) 
         Err(e) => {
             if args.skip_unreadable {
                 eprintln!("{}: {}", file.display(), e);
-                return Ok(());
+                return Ok(false);
             }
             return Err(e).with_context(|| format!("failed to read: {}", file.display()));
         }
@@ -282,14 +295,14 @@ fn exec_one_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) 
     let output = child.wait_with_output()?;
     if output.status.success() {
         let name = file.to_string_lossy();
-        diff(args, w, &name, &inb, &name, &output.stdout)?;
+        return diff(args, w, &name, &inb, &name, &output.stdout);
     } else {
         warn!("{}: command exited with {}", file.display(), output.status);
     }
-    Ok(())
+    Ok(false)
 }
 
-fn exec_with_buf_read<R: BufRead, W: Write>(args: &Args, mut r: R, w: W) -> Result<()> {
+fn exec_with_buf_read<R: BufRead, W: Write>(args: &Args, mut r: R, w: W) -> Result<bool> {
     let mut command = Command::new(&args.cmd_name);
     let mut child = command
         .args(&args.cmd_args)
@@ -326,11 +339,11 @@ fn exec_with_buf_read<R: BufRead, W: Write>(args: &Args, mut r: R, w: W) -> Resu
     let status = child.wait()?;
     stream_result?;
     if status.success() {
-        diff(args, w, "<stdin>", &inb, "<stdout>", &child_out)?;
+        return diff(args, w, "<stdin>", &inb, "<stdout>", &child_out);
     } else {
         warn!("command exited with {}", status);
     }
-    Ok(())
+    Ok(false)
 }
 
 fn diff<W: Write>(
@@ -340,17 +353,17 @@ fn diff<W: Write>(
     a: &[u8],
     bname: &str,
     b: &[u8],
-) -> Result<()> {
+) -> Result<bool> {
     let diff = TextDiff::from_lines(a, b);
     if !args.use_color {
         let mut udiff = diff.unified_diff();
         let udiff = udiff.header(aname, bname);
         udiff.to_writer(w)?;
-        return Ok(());
+        return Ok(diff.ratio() < 1.0);
     }
     let ops = diff.grouped_ops(3);
     if ops.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let bold = Style::new().bold();
     let hunk = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan)));
@@ -391,5 +404,5 @@ fn diff<W: Write>(
             }
         }
     }
-    Ok(())
+    Ok(true)
 }

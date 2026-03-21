@@ -37,19 +37,20 @@ enum Response {
 }
 
 impl Response {
-    fn write_to<W: Write>(self, w: &mut W) -> Result<()> {
+    fn write_to<W: Write>(self, w: &mut W) -> Result<bool> {
         match self {
             Response::Diff(i, file, tid, buf) => {
                 trace!("handle_resp: {:?} {:?} {:?}", i, file, tid);
+                let has_diff = !buf.is_empty();
                 w.write_all(&buf)
                     .with_context(|| format!("{}", file.to_string_lossy()))?;
+                Ok(has_diff)
             }
             Response::Error(i, file, tid, e) => {
                 trace!("handle_resp error: {:?} {:?} {:?}", i, file, tid);
-                return Err(e).with_context(|| format!("{}", file.to_string_lossy()));
+                Err(e).with_context(|| format!("{}", file.to_string_lossy()))
             }
         }
-        Ok(())
     }
 }
 
@@ -59,7 +60,7 @@ pub(crate) fn parallel_exec_multiple_files_unordered<W, I, F>(
     threads: NonZeroUsize,
     exec_fn: F,
     opts: ParallelOptions,
-) -> Result<()>
+) -> Result<bool>
 where
     W: Write,
     I: Iterator<Item = PathBuf>,
@@ -100,6 +101,7 @@ where
         // processing files
         trace!("processing...");
         let mut count = 0usize;
+        let mut has_diff = false;
         for (i, file) in files.enumerate() {
             let req = Request::Input(i, file.to_owned());
             trace!("send: {} {:?}", i, req);
@@ -113,7 +115,7 @@ where
                         break;
                     }
                     recv(c2p_rx) -> resp => {
-                        resp?.write_to(&mut w)?;
+                        has_diff |= resp?.write_to(&mut w)?;
                         count -= 1;
                     }
                 }
@@ -122,10 +124,10 @@ where
         trace!("remains: {}", count);
         while count > 0 {
             let resp = c2p_rx.recv()?;
-            resp.write_to(&mut w)?;
+            has_diff |= resp.write_to(&mut w)?;
             count -= 1;
         }
-        Ok(())
+        Ok(has_diff)
     })
 }
 
@@ -135,7 +137,7 @@ pub(crate) fn parallel_exec_multiple_files_ordered<W, I, F>(
     threads: NonZeroUsize,
     exec_fn: F,
     opts: ParallelOptions,
-) -> Result<()>
+) -> Result<bool>
 where
     W: Write,
     I: Iterator<Item = PathBuf>,
@@ -173,6 +175,7 @@ where
         trace!("processing...");
         let mut c2p_rxs = VecDeque::new();
         let c2p_rxs_capacity = threads.get() * opts.c2p_rxs_capacity_factor;
+        let mut has_diff = false;
         for (i, file) in files.enumerate() {
             let req = Request::Input(i, file.to_owned());
             // child to parent
@@ -183,7 +186,7 @@ where
                 // pipelining
                 if c2p_rxs.len() > c2p_rxs_capacity {
                     let resp = c2p_rxs[0].recv()?;
-                    resp.write_to(&mut w)?;
+                    has_diff |= resp.write_to(&mut w)?;
                     c2p_rxs.pop_front();
                 } else {
                     // c2p_rxs is always non-empty here: push_back runs before this loop
@@ -194,7 +197,7 @@ where
                             break;
                         }
                         recv(c2p_rxs[0]) -> resp => {
-                            resp?.write_to(&mut w)?;
+                            has_diff |= resp?.write_to(&mut w)?;
                             c2p_rxs.pop_front();
                         }
                     }
@@ -207,9 +210,9 @@ where
                 break;
             };
             let resp = c2p_rx.recv()?;
-            resp.write_to(&mut w)?;
+            has_diff |= resp.write_to(&mut w)?;
         }
-        Ok(())
+        Ok(has_diff)
     })
 }
 
