@@ -315,30 +315,31 @@ fn diff_filter<R: BufRead, W: Write>(args: &Args, mut r: R, w: W) -> Result<bool
         .with_context(|| format!("failed to execute: {}", args.cmd_name))?;
     let mut child_stdin = child.stdin.take().unwrap();
     let mut child_stdout = child.stdout.take().unwrap();
-    // Read child's stdout in a thread to prevent deadlock while streaming stdin
-    let stdout_handle = thread::spawn(move || -> io::Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        child_stdout.read_to_end(&mut buf)?;
-        Ok(buf)
-    });
-    // Stream r to child_stdin, capturing a copy in inb for the diff
     let mut inb = Vec::<u8>::new();
-    let stream_result = (|| -> io::Result<()> {
-        let mut chunk = [0u8; 8192];
-        loop {
-            let n = r.read(&mut chunk)?;
-            if n == 0 {
-                break;
+    // Read child's stdout in a scoped thread to prevent deadlock while streaming stdin
+    let (child_out, stream_result) = thread::scope(|s| {
+        let stdout_handle = s.spawn(|| -> io::Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            child_stdout.read_to_end(&mut buf)?;
+            Ok(buf)
+        });
+        let stream_result = (|| -> io::Result<()> {
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = r.read(&mut chunk)?;
+                if n == 0 {
+                    break;
+                }
+                inb.extend_from_slice(&chunk[..n]);
+                child_stdin.write_all(&chunk[..n])?;
             }
-            inb.extend_from_slice(&chunk[..n]);
-            child_stdin.write_all(&chunk[..n])?;
-        }
-        Ok(())
-    })();
-    drop(child_stdin); // signal EOF to child regardless of stream_result
-    let child_out = stdout_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("stdout reader thread panicked"))??;
+            Ok(())
+        })();
+        drop(child_stdin); // signal EOF to child regardless of stream_result
+        let child_out = stdout_handle.join().expect("stdout reader thread panicked");
+        (child_out, stream_result)
+    });
+    let child_out = child_out?;
     let status = child.wait()?;
     stream_result?;
     if status.success() {
