@@ -211,3 +211,133 @@ fn test_files_from_stdin_null() -> Result<(), Box<dyn std::error::Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn test_color_always_has_ansi_codes() -> Result<(), Box<dyn std::error::Error>> {
+    test_filter!(
+        ["--color", "always", "cat", "tests/fixtures/example.txt"],
+        include_str!("fixtures/example.nolf.txt"),
+        include_str!("fixtures/example.color.patch")
+    );
+    Ok(())
+}
+
+// Exit code tests
+
+fn nablex() -> assert_cmd::Command {
+    assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("nablex"))
+}
+
+#[test]
+fn test_exit_0_no_check() {
+    // Without --check, exit 0 even when differences exist
+    nablex()
+        .args(["sed", "s/e/E/g"])
+        .write_stdin(include_str!("fixtures/example.txt"))
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn test_exit_0_check_no_diff() {
+    // --check with no differences → exit 0
+    nablex()
+        .args(["--check", "cat"])
+        .write_stdin("hello\n")
+        .assert()
+        .code(0)
+        .stdout("");
+}
+
+#[test]
+fn test_exit_1_check_with_diff() {
+    // --check with differences → exit 1
+    nablex()
+        .args(["--check", "sed", "s/e/E/g"])
+        .write_stdin(include_str!("fixtures/example.txt"))
+        .assert()
+        .code(1)
+        .stdout(include_str!("fixtures/example.filter.patch"));
+}
+
+#[test]
+fn test_exit_1_check_file_mode() {
+    // --check in file mode
+    nablex()
+        .args([
+            "--check",
+            "sed",
+            "s/e/E/g",
+            ":::",
+            "tests/fixtures/example.txt",
+        ])
+        .assert()
+        .code(1)
+        .stdout(include_str!("fixtures/example.txt.patch"));
+}
+
+#[test]
+fn test_exit_2_command_not_found() {
+    // Nonexistent command → exit 2
+    nablex()
+        .args(["nonexistent_cmd_12345"])
+        .write_stdin("hello\n")
+        .assert()
+        .code(2)
+        .stdout("");
+}
+
+#[test]
+fn test_exit_2_file_not_found() {
+    // Nonexistent file → exit 2
+    nablex()
+        .args(["cat", ":::", "nonexistent_file_12345.txt"])
+        .assert()
+        .code(2)
+        .stdout("");
+}
+
+#[test]
+fn test_exit_0_skip_unreadable() {
+    // --skip-unreadable skips missing files instead of erroring
+    nablex()
+        .args(["-s", "cat", ":::", "nonexistent_file_12345.txt"])
+        .assert()
+        .code(0)
+        .stdout("");
+}
+
+#[test]
+fn test_exit_0_skip_unreadable_with_valid_file() {
+    // --skip-unreadable processes valid files and skips missing ones
+    nablex()
+        .args([
+            "-s",
+            "sed",
+            "s/e/E/g",
+            ":::",
+            "nonexistent_file_12345.txt",
+            "tests/fixtures/example.txt",
+        ])
+        .assert()
+        .code(0)
+        .stdout(include_str!("fixtures/example.txt.patch"));
+}
+
+#[test]
+fn test_exit_1_check_skip_unreadable_with_diff() {
+    // --check + --skip-unreadable: skips bad files, still reports diff
+    nablex()
+        .args([
+            "--check",
+            "-s",
+            "sed",
+            "s/e/E/g",
+            ":::",
+            "nonexistent_file_12345.txt",
+            "tests/fixtures/example.txt",
+        ])
+        .assert()
+        .code(1)
+        .stdout(include_str!("fixtures/example.txt.patch"));
+}
