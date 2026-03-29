@@ -3,7 +3,7 @@
 [![ci](https://github.com/taskie/nablex/actions/workflows/ci.yml/badge.svg)](https://github.com/taskie/nablex/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/taskie/nablex/branch/main/graph/badge.svg?token=QIC7IOY4PL)](https://codecov.io/gh/taskie/nablex)
 
-**nablex** — *diff what your command would change.*
+**nablex** (nabla exec) — *diff what your command would change.*
 
 ![Example](images/example.gif)
 
@@ -33,6 +33,8 @@ nablex sed 's/foo/bar/g' ::: *.txt
 
 # Apply the diff
 nablex sed 's/foo/bar/g' ::: *.txt | patch -p0
+# or apply in-place
+nablex --apply sed 's/foo/bar/g' ::: *.txt
 ```
 
 ## How it works
@@ -132,6 +134,15 @@ echo foo | nablex -L old -L new sed 's/foo/bar/g'
 +bar
 ```
 
+### Applying changes (`--apply`)
+
+Use `--apply` to write command output back to each file in-place (file mode only).
+The write is atomic — nablex writes to a temporary file and renames it.
+
+```sh
+nablex --apply sed 's/foo/bar/g' ::: *.txt
+```
+
 ### Recipes
 
 With `find`:
@@ -174,6 +185,7 @@ Options:
   -j, --jobs <JOBS>                Number of parallel jobs (0 = auto-detect) [default: 0]
   -u, --unordered                  Allow unordered output for faster parallel execution
   -f, --files-from <FILE>          Read file paths from FILE ('-' for stdin)
+      --apply                      Apply command output back to files in-place (file mode only)
   -I, --replace-str <REPLACE_STR>  Replace occurrences of REPLACE_STR in arguments with the file path
   -s, --skip-unreadable            Skip unreadable files with a warning instead of aborting
   -c, --check                      Exit with status 1 if any differences are found

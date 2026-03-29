@@ -395,3 +395,54 @@ fn test_label_too_many() {
         .assert()
         .code(2);
 }
+
+// Apply mode (--apply)
+
+fn test_tmpdir() -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("test-tmp");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn test_apply_writes_file() {
+    use std::fs;
+    let path = test_tmpdir().join("nablex_test_apply.txt");
+    let original = include_str!("fixtures/example.txt");
+    let expected: String = original.replace('e', "E");
+    fs::write(&path, original).unwrap();
+    nablex()
+        .args([
+            "--apply",
+            "-L",
+            "original",
+            "-L",
+            "modified",
+            "sed",
+            "s/e/E/g",
+            ":::",
+            path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(include_str!("fixtures/example.label.patch"));
+    let result = fs::read_to_string(&path).unwrap();
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn test_apply_no_diff_leaves_file_unchanged() {
+    use std::fs;
+    let path = test_tmpdir().join("nablex_test_apply_no_diff.txt");
+    let content = "hello\n";
+    fs::write(&path, content).unwrap();
+    nablex()
+        .args(["--apply", "cat", ":::", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout("");
+    let result = fs::read_to_string(&path).unwrap();
+    assert_eq!(result, content);
+}

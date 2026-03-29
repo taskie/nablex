@@ -94,6 +94,9 @@ struct Args {
     /// Arguments for CMD; use ':::' to separate CMD args from file paths
     #[clap(name = "ARG", trailing_var_arg = true, allow_hyphen_values = true)]
     cmd_args: Vec<String>,
+    /// Apply command output back to files in-place (file mode only)
+    #[clap(long)]
+    apply: bool,
     /// Replace occurrences of REPLACE_STR in arguments with the file path
     #[clap(short = 'I', long)]
     replace_str: Option<String>,
@@ -285,6 +288,18 @@ fn diff_files_serial<W: Write, I: Iterator<Item = PathBuf>>(
     Ok(has_diff)
 }
 
+/// Write data to a file atomically via a temporary file and rename.
+fn apply_to_file(file: &Path, data: &[u8]) -> Result<()> {
+    let dir = file.parent().unwrap_or(Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("failed to create temp file in: {}", dir.display()))?;
+    tmp.write_all(data)
+        .with_context(|| format!("failed to write temp file for: {}", file.display()))?;
+    tmp.persist(file)
+        .with_context(|| format!("failed to rename temp file to: {}", file.display()))?;
+    Ok(())
+}
+
 /// Read one file, run the command, and write the unified diff.
 fn diff_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) -> Result<bool> {
     let mut command = Command::new(&args.cmd_name);
@@ -329,7 +344,11 @@ fn diff_file<W: Write>(args: &Args, w: W, cmd_args: &[String], file: &Path) -> R
         let name = file.to_string_lossy();
         let aname = args.labels.first().map(|s| s.as_str()).unwrap_or(&name);
         let bname = args.labels.get(1).map(|s| s.as_str()).unwrap_or(&name);
-        return diff(args, w, aname, &inb, bname, &output.stdout);
+        let has_diff = diff(args, w, aname, &inb, bname, &output.stdout)?;
+        if args.apply && has_diff {
+            apply_to_file(file, &output.stdout)?;
+        }
+        return Ok(has_diff);
     } else {
         eprintln!("{}: command exited with {}", file.display(), output.status);
     }
